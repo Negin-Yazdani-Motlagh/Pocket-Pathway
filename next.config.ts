@@ -1,7 +1,11 @@
 import type { NextConfig } from "next";
 
-// V2 is a local-first CT drill prototype, so we keep the config simple
-// (no basePath / assetPrefix needed for GitHub Pages).
-const nextConfig: NextConfig = {};
+// Deploy V2 via GitHub Pages at /Pocket-Pathway
+const nextConfig: NextConfig = {
+  output: "export",
+  basePath: "/Pocket-Pathway",
+  assetPrefix: "/Pocket-Pathway/",
+  trailingSlash: true,
+};
 
 export default nextConfig;

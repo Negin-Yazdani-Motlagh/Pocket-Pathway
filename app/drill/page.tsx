@@ -94,8 +94,6 @@ export default function DrillPage() {
     "original" | "increment" | "return_in_loop" | "while_ge"
   >("original");
   const [runResult, setRunResult] = useState<RunResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EvaluationResult | null>(null);
 
   useEffect(() => {
@@ -128,7 +126,7 @@ export default function DrillPage() {
     (step === 2 && bugPart) ||
     (step === 3 && fixChoice);
 
-  const handleNext = async () => {
+  const handleNext = () => {
     // Always allow advancing from step 0 (no choice required)
     if (step < 3) {
       if (step === 0) {
@@ -143,73 +141,94 @@ export default function DrillPage() {
 
     if (!canNext) return;
 
-    // Final step: submit for feedback
-    setLoading(true);
-    setError(null);
-    setResult(null);
+    // Final step: compute feedback locally (no API call)
+    const correctCount =
+      (whyStuck === CORRECT_WHY_STUCK ? 1 : 0) +
+      (bugPart === CORRECT_BUG_PART ? 1 : 0) +
+      (fixChoice === CORRECT_FIX ? 1 : 0);
 
-    try {
-      const correctCount =
-        (whyStuck === CORRECT_WHY_STUCK ? 1 : 0) +
-        (bugPart === CORRECT_BUG_PART ? 1 : 0) +
-        (fixChoice === CORRECT_FIX ? 1 : 0);
+    let mcScore: number;
+    switch (correctCount) {
+      case 3:
+        mcScore = 95;
+        break;
+      case 2:
+        mcScore = 75;
+        break;
+      case 1:
+        mcScore = 55;
+        break;
+      default:
+        mcScore = 35;
+    }
 
-      let mcScore: number;
-      switch (correctCount) {
-        case 3:
-          mcScore = 95;
-          break;
-        case 2:
-          mcScore = 75;
-          break;
-        case 1:
-          mcScore = 55;
-          break;
-        default:
-          mcScore = 35;
-      }
+    const strengths: string[] = [];
+    const improvements: string[] = [];
 
-      const res = await fetch("/api/evaluate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          code: PYTHON_SNIPPET,
-          prompt: DRILL_PROMPT,
-          reasoning: combinedReasoning,
-          mcScore,
-          correctCount,
-        }),
-      });
+    if (correctCount >= 2) {
+      strengths.push(
+        "You traced the loop and its variables in a structured way.",
+      );
+    } else {
+      improvements.push(
+        "Walk through each loop step explicitly to see how i and total change.",
+      );
+    }
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Could not evaluate your answer.");
-      }
+    if (whyStuck === CORRECT_WHY_STUCK) {
+      strengths.push("You correctly identified that i never changes.");
+    } else {
+      improvements.push(
+        "Focus on whether the loop variable ever changes so the loop can end.",
+      );
+    }
 
-      const data = (await res.json()) as EvaluationResult;
-      setResult(data);
-      setRunVariant("original");
-      setRunResult(null);
+    if (bugPart === CORRECT_BUG_PART) {
+      strengths.push(
+        "You pinpointed the combination of the while condition and the missing increment.",
+      );
+    } else {
+      improvements.push(
+        "Connect the condition while i <= n with the fact that i is never incremented.",
+      );
+    }
 
-      if (typeof window !== "undefined") {
-        const today = new Date();
-        const key = today.toISOString().slice(0, 10);
-        const raw = window.localStorage.getItem("ct_drill_history") ?? "{}";
-        const history = JSON.parse(raw) as Record<string, { score: number }>;
-        history[key] = { score: data.score };
-        window.localStorage.setItem("ct_drill_history", JSON.stringify(history));
+    if (fixChoice === CORRECT_FIX) {
+      strengths.push("You proposed the right minimal fix: add i += 1.");
+    } else {
+      improvements.push(
+        "Try to propose the smallest change that makes the loop eventually stop.",
+      );
+    }
 
-        const forestRaw = window.localStorage.getItem("ct_forest_trees") ?? "0";
-        const forestCount = Number.parseInt(forestRaw, 10) || 0;
-        window.localStorage.setItem(
-          "ct_forest_trees",
-          String(Math.max(0, forestCount + 1)),
-        );
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
+    const summary =
+      "This score comes from how well you described the goal, followed the loop step by step, located the infinite loop bug, and chose a fix.";
+
+    const evaluation: EvaluationResult = {
+      score: mcScore,
+      strengths,
+      improvements,
+      summary,
+    };
+
+    setResult(evaluation);
+    setRunVariant("original");
+    setRunResult(null);
+
+    if (typeof window !== "undefined") {
+      const today = new Date();
+      const key = today.toISOString().slice(0, 10);
+      const raw = window.localStorage.getItem("ct_drill_history") ?? "{}";
+      const history = JSON.parse(raw) as Record<string, { score: number }>;
+      history[key] = { score: evaluation.score };
+      window.localStorage.setItem("ct_drill_history", JSON.stringify(history));
+
+      const forestRaw = window.localStorage.getItem("ct_forest_trees") ?? "0";
+      const forestCount = Number.parseInt(forestRaw, 10) || 0;
+      window.localStorage.setItem(
+        "ct_forest_trees",
+        String(Math.max(0, forestCount + 1)),
+      );
     }
   };
 
@@ -221,8 +240,7 @@ export default function DrillPage() {
     setStep((s) => (s - 1) as StepId);
   };
 
-  const isNextDisabled =
-    loading || (step >= 1 && !canNext);
+  const isNextDisabled = step >= 1 && !canNext;
   const locked = Boolean(result);
   const showAnswers = Boolean(result);
 
@@ -342,9 +360,7 @@ print(sum_to_n(5))
                     <label
                       className={optionStyles({
                         showAnswers,
-                        isCorrect:
-                          "The loop adds 0+1+2+3+4+5 to total and then stops." ===
-                          CORRECT_WHY_STUCK,
+                        isCorrect: false,
                         isSelected:
                           whyStuck ===
                           "The loop adds 0+1+2+3+4+5 to total and then stops.",
@@ -400,7 +416,7 @@ print(sum_to_n(5))
                     <label
                       className={optionStyles({
                         showAnswers,
-                        isCorrect: "The loop never runs at all." === CORRECT_WHY_STUCK,
+                        isCorrect: false,
                         isSelected: whyStuck === "The loop never runs at all.",
                         locked,
                       })}
@@ -464,7 +480,7 @@ print(sum_to_n(5))
                     <label
                       className={optionStyles({
                         showAnswers,
-                        isCorrect: "The line 'total += i'." === CORRECT_BUG_PART,
+                        isCorrect: false,
                         isSelected: bugPart === "The line 'total += i'.",
                         locked,
                       })}
@@ -485,8 +501,7 @@ print(sum_to_n(5))
                     <label
                       className={optionStyles({
                         showAnswers,
-                        isCorrect:
-                          "The return statement 'return total'." === CORRECT_BUG_PART,
+                        isCorrect: false,
                         isSelected: bugPart === "The return statement 'return total'.",
                         locked,
                       })}
@@ -550,8 +565,7 @@ print(sum_to_n(5))
                     <label
                       className={optionStyles({
                         showAnswers,
-                        isCorrect:
-                          "Move 'return total' inside the loop." === CORRECT_FIX,
+                        isCorrect: false,
                         isSelected:
                           fixChoice === "Move 'return total' inside the loop.",
                         locked,
@@ -573,8 +587,7 @@ print(sum_to_n(5))
                     <label
                       className={optionStyles({
                         showAnswers,
-                        isCorrect:
-                          "Change the while condition to 'while i >= n:'." === CORRECT_FIX,
+                        isCorrect: false,
                         isSelected:
                           fixChoice ===
                           "Change the while condition to 'while i >= n:'.",
@@ -602,17 +615,10 @@ print(sum_to_n(5))
               )}
             </div>
 
-            {error && (
-              <p className="mt-2 text-sm text-amber-400" role="alert">
-                {error}
-              </p>
-            )}
-
             <div className="mt-4 flex justify-between gap-3">
               <button
                 type="button"
                 onClick={handleBack}
-                disabled={loading}
                 className="inline-flex items-center justify-center rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-900/60 disabled:opacity-50 disabled:cursor-not-allowed text-xs sm:text-sm px-4 py-2 transition-colors"
               >
                 ← Back
@@ -627,11 +633,7 @@ print(sum_to_n(5))
                 disabled={isNextDisabled}
                 className="inline-flex items-center justify-center rounded-xl bg-blue-500 hover:bg-blue-400 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold px-6 py-2.5 text-xs sm:text-sm transition-colors min-h-[44px] shrink-0"
               >
-                {loading
-                  ? "Thinking about your answer…"
-                  : step < 3
-                    ? "Next"
-                    : "See feedback"}
+                {step < 3 ? "Next" : "See feedback"}
               </button>
             </div>
 
@@ -654,7 +656,6 @@ print(sum_to_n(5))
                       setBugPart("");
                       setFixChoice("");
                       setResult(null);
-                      setError(null);
                       setRunVariant("original");
                       setRunResult(null);
                     }}
